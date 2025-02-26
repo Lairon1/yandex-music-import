@@ -1,99 +1,84 @@
-import yandex_music
-import time
-import os
+import logging
+from yandex_music import Client
 
 
-def read_tracks(filename):
-    """Считывает список треков из файла"""
-    with open(filename, "r", encoding="utf-8") as file:
-        return [line.strip() for line in file.readlines() if line.strip()]
+def setup_logger():
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[logging.FileHandler("yandex_music.log"), logging.StreamHandler()]
+    )
 
 
-def find_track(client, track_name):
-    """Ищет трек в Яндекс Музыке"""
-    search_result = client.search(track_name, type_="track")
-    if search_result.tracks:
-        return search_result.tracks.results[0]  # Берем первый найденный трек
-    return None
+def get_token():
+    return input("Введите ваш токен Яндекс.Музыки: ").strip()
 
 
-def get_or_create_playlist(client, playlist_name):
-    """Получает или создает плейлист"""
-    user = client.me
-    playlists = client.users_playlists_list(user.account.uid)
-
-    for playlist in playlists:
-        if playlist.title == playlist_name:
-            return playlist  # Если плейлист найден, возвращаем его
-
-    # Если нет, создаем новый
-    return client.users_playlists_create(playlist_name)
+def get_file_path():
+    return input("Введите путь к файлу с названиями треков: ").strip()
 
 
-def add_tracks_to_playlist(client, playlist, tracks):
-    """Добавляет найденные треки в плейлист"""
-    track_ids = []
-    not_found_tracks = []
+def get_playlist_choice(client):
+    playlists = client.users_playlists_list()
+    if playlists:
+        logging.info("Список доступных плейлистов:")
+        for i, playlist in enumerate(playlists):
+            logging.info(f"{i + 1}. {playlist.title} ({playlist.track_count} треков)")
 
-    for track in tracks:
-        found_track = find_track(client, track)
-        if found_track:
-            track_ids.append(f"{found_track.id}:{found_track.albums[0].id}")
-            print(f"✅ Найдено: {track}")
-        else:
-            print(f"❌ Не найдено: {track}")
-            not_found_tracks.append(track)
+        choice = input("Введите номер плейлиста или 0 для создания нового: ")
+        if choice.isdigit():
+            choice = int(choice)
+            if 1 <= choice <= len(playlists):
+                return playlists[choice - 1].kind, playlists[choice - 1].title
 
-        time.sleep(1)  # Задержка, чтобы не получить блокировку
+    new_name = input("Введите название нового плейлиста: ")
+    new_playlist = client.users_playlists_create(new_name)
+    return new_playlist.kind, new_name
 
-    if track_ids:
-        client.users_playlists_insert_tracks(
-            kind=playlist.kind, track_ids=track_ids
-        )
-        print(f"🎵 Треки добавлены в плейлист: {playlist.title}")
 
-    if not_found_tracks:
-        print("\n⚠️ Не удалось найти следующие треки:")
-        for track in not_found_tracks:
-            print(f"- {track}")
+def search_track(client, track_name):
+    search_result = client.search(track_name, type_='track')
+    tracks = search_result.tracks.results if search_result.tracks else []
+    return tracks[0] if tracks else None
+
+
+def add_track_to_playlist(client, playlist_id, track):
+    playlist = client.users_playlists(kind=playlist_id)
+    revision = playlist.revision
+    client.users_playlists_insert_track(
+        kind=playlist_id, track_id=track.id, album_id=track.albums[0].id, revision=revision
+    )
 
 
 def main():
-    print("🎵 Импорт Яндекс Музыки: Инициализация...")
+    setup_logger()
 
-    # Ввод данных от пользователя
-    token = input("Введите ваш токен Яндекс Музыки: ").strip()
-    file_path = input("Введите путь к файлу со списком музыки: ").strip()
+    token = get_token()
+    client = Client(token).init()
 
-    # Проверка существования файла
-    if not os.path.exists(file_path):
-        print(f"❌ Ошибка: Файл {file_path} не найден!")
+    file_path = get_file_path()
+    try:
+        with open(file_path, "r", encoding="utf-8") as file:
+            track_names = [line.strip() for line in file if line.strip()]
+    except FileNotFoundError:
+        logging.error("Файл не найден.")
         return
 
-    client = yandex_music.Client(token).init()
-    tracks = read_tracks(file_path)
+    playlist_id, playlist_name = get_playlist_choice(client)
+    logging.info(f"Используем плейлист: {playlist_name}")
 
-    # Получаем список плейлистов пользователя
-    user = client.me
-    playlists = client.users_playlists_list(user.account.uid)
+    for track_name in track_names:
+        logging.info(f"Ищем трек: {track_name}")
+        track = search_track(client, track_name)
 
-    print("\nВаши плейлисты:")
-    for i, playlist in enumerate(playlists, 1):
-        print(f"{i}. {playlist.title}")
+        if track:
+            add_track_to_playlist(client, playlist_id, track)
+            logging.info(f"Добавлен: {track.title} - {track.artists[0].name}")
+        else:
+            logging.warning(f"Трек не найден: {track_name}")
 
-    print(f"{len(playlists) + 1}. ➕ Новый плейлист")
-
-    # Выбор плейлиста
-    choice = int(input("\nВыберите номер плейлиста: "))
-    if choice == len(playlists) + 1:
-        playlist_name = input("Введите название нового плейлиста: ")
-        playlist = get_or_create_playlist(client, playlist_name)
-    else:
-        playlist = playlists[choice - 1]
-
-    add_tracks_to_playlist(client, playlist, tracks)
+    logging.info("Завершено!")
 
 
 if __name__ == "__main__":
-    print("✅ Все модули успешно импортированы!")
     main()
